@@ -118,20 +118,22 @@ def parse_product(item):
     try:
         title_text = get_title(item)
         product_link = get_product_link(item)
+        product_asin = get_product_id(item)
+
         return {
             "Product_Name": title_text,
-            "Product_ASIN": get_product_id(item),
+            "Product_ASIN": product_asin,
             "Brand": get_brand(title_text),
             "Price": get_price(item),
             "MRP": get_mrp(item),
             "Discount": get_discount_percentage(item),
-            "Stock_Status": "In Stock",
+            "Stock_Status": "In Stock",   # or get_stock_status(item) if you wrote one
             "Rating": get_rating(item),
             "Reviews": get_reviews(item),
-            "Seller": "Amazon.com, Inc",
+            "Seller": "Amazon.com, Inc",  # or get_seller(item)
             "Product_Link": product_link,
-            "Reviews_Link": get_reviews_link(product_link),
-            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Add current timestamp
+            "Reviews_Link": f"https://www.amazon.in/product-reviews/{product_asin}" if product_asin else None,
+            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     except Exception as e:
         print(f"Error parsing product: {e}")
