@@ -1,232 +1,141 @@
-import os
-import time
-import json
-import requests
 import pandas as pd
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-from datetime import datetime, timedelta
+import streamlit as st
+import plotly.express as px
+from statsmodels.tsa.arima.model import ARIMA
 
-load_dotenv()
-# Retrieve headers and cookies from the environment variables
-HEADERS = json.loads(os.getenv("HEADERS"))
-COOKIES = json.loads(os.getenv("COOKIES"))
-BASE_URL = "https://www.amazon.in/s?k=headphones"
+##############################
+# File Paths
+##############################
+REVIEWS_FILE = r"C:\Users\lenovo\OneDrive\Desktop\infosys\ai-batch-2\reviews_with_sentiment.csv"
+PRODUCTS_FILE = r"C:\Users\lenovo\OneDrive\Desktop\infosys\ai-batch-2\products.csv"
 
-def fetch_content(url):
-    """
-    Fetch HTML content of the given URL.
-    """
-    try:
-        response = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=10)
-        response.raise_for_status()
-        print(f"Successfully fetched page: {url}")
-        soup = BeautifulSoup(response.content, "html.parser")
-        return soup
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching page content: {e}")
-        return None
+##############################
+# Load CSVs
+##############################
+@st.cache_data
+def load_reviews(file_path):
+    df = pd.read_csv(file_path)
+    df["Review_Date"] = pd.to_datetime(df["Review_Date"], errors="coerce")
+    df.dropna(subset=["Review_Text", "Sentiment", "Sentiment_Score"], inplace=True)
+    return df
 
-def get_title(item):
-    title = item.find("h2", class_="a-size-medium a-spacing-none a-color-base a-text-normal")
-    return title.text.strip() if title else None
+@st.cache_data
+def load_products(file_path):
+    df = pd.read_csv(file_path)
+    df.dropna(subset=["Discount"], inplace=True)  # Keep only rows with Discount
+    df["Discount"] = df["Discount"].astype(float)
+    # Do NOT reference 'Date' because your CSV doesn't have it
+    return df
 
-def get_brand(title_text):
-    if title_text.startswith("soundcore"):
-        return "Anker"
-    return title_text.split()[0] if title_text else None
 
-def get_price(item):
-    discount_price = item.find("span", class_="a-price")
-    return (
-        discount_price.find("span", class_="a-offscreen").text.strip()
-        if discount_price and discount_price.find("span", class_="a-offscreen")
-        else None
-    )
+reviews_df = load_reviews(REVIEWS_FILE)
+products_df = load_products(PRODUCTS_FILE)
 
-def get_mrp(item):
-    base_price = item.find("div", class_="a-section aok-inline-block")
-    return (
-        base_price.find("span", class_="a-offscreen").text.strip()
-        if base_price and base_price.find("span", class_="a-offscreen")
-        else None
-    )
+##############################
+# Streamlit Setup
+##############################
+st.set_page_config(
+    page_title="Sentiment Dashboard",
+    page_icon="🛒",
+    layout="wide"
+)
 
-def get_discount_percentage(item):
-    discount = item.find("span", string=lambda text: text and "%" in text)
-    return discount.text.strip().strip("()") if discount else None
+st.title("📊 Product Sentiment Dashboard")
 
-def get_rating(item):
-    rating = item.find("span", class_="a-icon-alt")
-    return rating.text.strip() if rating else None
+##############################
+# Product Selection
+##############################
+products = reviews_df["Product_Name"].unique().tolist()
+selected_product = st.selectbox("Select a product to analyze", products)
 
-def get_reviews(item):
-    reviews = item.find("span", class_="a-size-base s-underline-text")
-    return reviews.text.strip() if reviews else None
+product_reviews = reviews_df[reviews_df["Product_Name"] == selected_product]
+product_data = products_df[products_df["Product_Name"] == selected_product]
 
-def get_product_id(item):
-    return item.get("data-asin", None)
+##############################
+# Show Product Image
+##############################
+product_asin = product_reviews["Product_ASIN"].iloc[0] if "Product_ASIN" in product_reviews.columns else None
+if product_asin:
+    product_image_url = f"https://images.amazon.com/images/P/{product_asin}.jpg"
+    st.image(product_image_url, width=300, caption=selected_product)
+else:
+    st.warning("⚠️ Product image not available")
 
-def get_product_link(item):
-    """
-    Extract product link from the item.
-    """
-    link = item.find("a", class_="a-link-normal s-no-outline")
-    return "https://www.amazon.in" + link["href"] if link and "href" in link.attrs else None
+##############################
+# Sentiment Summary
+##############################
+st.header("🗣️ Sentiment Analysis Summary")
+sentiment_counts = product_reviews["Sentiment"].value_counts().reset_index()
+sentiment_counts.columns = ["Sentiment", "Count"]
 
-def get_reviews_link(product_link):
-    """
-    Extracts the reviews link from the given product link, adds a prefix
-    for Amazon India, and returns the complete URL.
+fig = px.bar(
+    sentiment_counts,
+    x="Sentiment",
+    y="Count",
+    color="Sentiment",
+    color_discrete_map={
+        "Positive": "#69f542",
+        "Neutral": "#42ddf5",
+        "Negative": "#f54248"
+    },
+    title=f"Sentiment Distribution for {selected_product}"
+)
+st.plotly_chart(fig, use_container_width=True)
 
-    Args:
-        product_link: URL of the product page.
+avg_score = product_reviews["Sentiment_Score"].mean()
+st.metric(label="Average Sentiment Score", value=f"{avg_score:.2f}")
 
-    Returns:
-        The complete URL of the reviews page, or None if not found.
-    """
-
-    try:
-        time.sleep(0.5)  # Introduce a delay to avoid overloading the server (adjust as needed)
-
-        response = requests.get(product_link, headers=HEADERS, cookies=COOKIES)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.content, 'html.parser')
-        # Target the 'a' tag directly using class selector
-        reviews_link_element = soup.select_one('a.a-link-emphasis[data-hook="see-all-reviews-link-foot"]')
-
-        if reviews_link_element:
-            href = reviews_link_element.get('href')
-            if href:
-                # Add prefix for Amazon India
-                url = f"https://amazon.in{href}"
-                return url
-            else:
-                return None
-        else:
-            return None
-
-    except (requests.exceptions.RequestException, requests.exceptions.HTTPError) as e:
-        print(f"Error fetching product page {product_link}: {e}")
-        return None
+##############################
+# Discount Forecasting (No Date Column)
+##############################
+if not product_data.empty and "Discount" in product_data.columns:
+    st.subheader("🔮 Forecasted Discounts for Next 5 Points")
+    discount_series = product_data["Discount"].reset_index(drop=True)
     
-def parse_product(item):
-    """
-    Extract details of a single product.
-    """
-    try:
-        title_text = get_title(item)
-        product_link = get_product_link(item)
-        product_asin = get_product_id(item)
-
-        return {
-            "Product_Name": title_text,
-            "Product_ASIN": product_asin,
-            "Brand": get_brand(title_text),
-            "Price": get_price(item),
-            "MRP": get_mrp(item),
-            "Discount": get_discount_percentage(item),
-            "Stock_Status": "In Stock",   # or get_stock_status(item) if you wrote one
-            "Rating": get_rating(item),
-            "Reviews": get_reviews(item),
-            "Seller": "Amazon.com, Inc",  # or get_seller(item)
-            "Product_Link": product_link,
-            "Reviews_Link": f"https://www.amazon.in/product-reviews/{product_asin}" if product_asin else None,
-            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    except Exception as e:
-        print(f"Error parsing product: {e}")
-        return None
-
-def scrape_page(url):
-    """
-    Scrape all product details from a single page.
-    """
-    soup = fetch_content(url)
-    if not soup:
-        return [], None
-
-    items = soup.find_all("div", {"data-component-type": "s-search-result"})
-    products = []
-
-    for item in items:
-        product_data = parse_product(item)
-        if product_data:
-            products.append(product_data)
-
-    # Find next page URL
-    next_button = soup.find("a", class_="s-pagination-next")
-    next_page_url = "https://www.amazon.in" + next_button["href"] if next_button and "href" in next_button.attrs else None
-
-    return products, next_page_url
-
-def scrape_within_time(base_url, max_time_minutes=5):
-    """
-    Scrape as many pages as possible within the given time limit.
-    """
-    all_products = []
-    current_page = 1
-    next_page_url = base_url
-    end_time = datetime.now() + timedelta(minutes=max_time_minutes)
-
-    try:
-        print(f"Starting the scraping process for {max_time_minutes} minutes...")
-        while next_page_url and datetime.now() < end_time:
-            print(f"Scraping page {current_page}...")
-            products, next_page_url = scrape_page(next_page_url)
-            
-            # If no products are found, end scraping
-            if not products:
-                print("No more products found. Stopping scraping.")
-                break
-
-            all_products.extend(products)
-            print(f"Scraped {len(products)} products from page {current_page}.")
-            current_page += 1
-            time.sleep(2)  # Add delay to prevent being blocked by the server
-            
-            # Check the time condition after each iteration to stop when the time is up
-            if datetime.now() >= end_time:
-                print("Time limit reached. Stopping scraping.")
-                break
-
-    except Exception as e:
-        print(f"An error occurred during scraping: {e}")
-    
-    print("Scraping finished.")
-    return all_products
-
-def save_to_csv(data, filename="products.csv"):
-    """
-    Save product data to a CSV file.
-    """
-    try:
-        # Define the directory where you want to save the file (assuming the 'amazon/' folder already exists)
-        directory = "Amazon"
-        
-        # Define the full file path to save the CSV file inside the 'amazon/' directory
-        full_file_path = os.path.join(directory, filename)
-        
-        # Save the DataFrame to CSV
-        df = pd.DataFrame(data)
-        df.to_csv(full_file_path, index=False)
-        
-        print(f"Data successfully saved to {full_file_path}.")
-    except Exception as e:
-        print(f"Error saving data to CSV: {e}")
-
-
-if __name__ == "__main__":
-    max_scraping_time = 1  # Max time in minutes
-    print("Starting the scraping process...")
-    products = scrape_within_time(BASE_URL, max_time_minutes=max_scraping_time)
-
-    # NOTE: For Amazon, we can scrape until Page-20, then there will be no more pages to scrape (EOP).
-    # So the scraping will be finished within approx. 3 minutes.
-
-    if products:
-        save_to_csv(products)
-        print(f"Scraped {len(products)} products.")
+    if len(discount_series) >= 6:
+        model = ARIMA(discount_series, order=(5,1,0))
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=5)
+        st.line_chart(forecast)
     else:
-        print("No products found.")
+        st.warning("⚠️ Not enough discount data to forecast (need at least 6 points).")
+
+##############################
+# Top Reviews
+##############################
+st.header("⭐ Top Reviews")
+
+top_positive = product_reviews[product_reviews["Sentiment"] == "Positive"].sort_values(
+    by="Sentiment_Score", ascending=False
+).head(5)
+
+top_negative = product_reviews[product_reviews["Sentiment"] == "Negative"].sort_values(
+    by="Sentiment_Score"
+).head(5)
+
+st.subheader("Top 5 Positive Reviews")
+for i, row in top_positive.iterrows():
+    st.markdown(f"**{row['Review_Title']}**")
+    st.write(row['Review_Text'])
+    st.write("---")
+
+st.subheader("Top 5 Negative Reviews")
+for i, row in top_negative.iterrows():
+    st.markdown(f"**{row['Review_Title']}**")
+    st.write(row['Review_Text'])
+    st.write("---")
+
+##############################
+# Simple Recommendations
+##############################
+st.header("💡 Simple Strategy Recommendations")
+
+positive_pct = len(top_positive) / len(product_reviews) * 100
+negative_pct = len(top_negative) / len(product_reviews) * 100
+
+if negative_pct > 50:
+    st.warning("⚠️ High negative sentiment detected. Consider improving product quality or addressing common complaints.")
+elif positive_pct > 60:
+    st.success("✅ Positive sentiment is strong. Maintain current strategy and consider small promotions to boost sales.")
+else:
+    st.info("ℹ️ Mixed sentiment. Monitor reviews closely and respond to customer feedback proactively.")
